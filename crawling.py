@@ -23,23 +23,17 @@ list_url = f"{base_url}/padm/life/notice-department.do"
 # ===== HTML 태그 제거 및 표 처리 =====
 def clean_html_keep_table(raw_html):
     soup = BeautifulSoup(raw_html, 'html.parser')
-
     output_text = ''
-
-    # 🔥 1. 테이블 먼저 추출
     tables = soup.find_all('table')
     for table in tables:
         table_text = extract_table_text(table)
         if table_text.strip():
             output_text += table_text + '\n'
-        table.decompose()  # ✅ 테이블 제거 (중복 방지)
-
-    # 🔥 2. 남은 본문 (p, div 등) 추출
+        table.decompose()
     for elem in soup.find_all(['p', 'div']):
         text = elem.get_text(strip=True)
         if text:
             output_text += text + '\n'
-
     return output_text.strip()
 
 def extract_table_text(table):
@@ -65,7 +59,6 @@ def crawl_notice_list(offset=0):
         try:
             title_box = row.find_element(By.CSS_SELECTOR, 'div.b-title-box')
 
-            # 🔥 고정 공지글 (b-notice 클래스 포함) 제외
             if 'b-notice' in title_box.get_attribute('class'):
                 continue
 
@@ -81,12 +74,10 @@ def crawl_notice_list(offset=0):
 
     return notices
 
-
-# ===== 공지 본문 크롤링 (본문 + 파일 링크 추출) =====
+# ===== 공지 본문 크롤링 =====
 def crawl_notice_detail(url):
     driver.get(url)
 
-    # 작성일 추출
     try:
         date_element = WebDriverWait(driver, 5).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, 'div.b-etc-box li.b-date-box span:nth-child(2)'))
@@ -95,7 +86,6 @@ def crawl_notice_detail(url):
     except:
         date_text = "(작성일 없음)"
 
-    # 본문 추출
     selector_candidates = [
         'div.b-content-box div.fr-view',
         'div.b-content-box'
@@ -118,7 +108,6 @@ def crawl_notice_detail(url):
     if not content_text.strip():
         content_text = "(본문 없음)"
 
-    # 파일 추출
     doc_links = []
     img_links = []
     try:
@@ -140,12 +129,14 @@ def crawl_notice_detail(url):
 # ===== 메인 실행 =====
 if __name__ == "__main__":
     all_notices = []
+    total_articles = 7206
+    articles_per_page = 10
 
-    # ✅ 여러 페이지 크롤링 (예시: 1~2페이지만)
-    for offset in range(0, 20, 10):  # 10개 단위로: 0, 10, 20, ...
+    for offset in range(0, total_articles, articles_per_page):
+        print(f"\n📄 현재 페이지 offset: {offset} (공지 {offset+1} ~ {offset+10})")
         notices = crawl_notice_list(offset=offset)
 
-        for notice in notices:
+        for idx, notice in enumerate(notices, start=1):
             title = notice['title']
             url = notice['url']
             date, content, doc_links, img_links = crawl_notice_detail(url)
@@ -154,24 +145,20 @@ if __name__ == "__main__":
                 '제목': title,
                 '작성일': date,
                 '본문': content,
-                '이미지파일 링크': ', '.join(img_links),
-                '문서파일 링크': ', '.join(doc_links)
+                '문서파일 링크': ', '.join(doc_links),
+                '이미지파일 링크': ', '.join(img_links)
             })
 
-            print("==== 제목 ====\n", title)
-            print("==== 작성일 ====\n", date)
-            print("==== 본문 ====\n", content)
-            print("==== 문서파일 링크 ====\n", doc_links)
-            print("==== 이미지파일 링크 ====\n", img_links)
-            print("\n\n")
+            print(f"✅ 크롤링 완료: {title} ({offset+idx}/{total_articles})")
+            time.sleep(2)  # ✅ 서버 부하 방지 (2초 대기)
 
     driver.quit()
 
     # ✅ CSV 파일로 저장
-    keys = ['제목', '작성일', '본문', '문서파일 링크' ,'이미지파일 링크']
-    with open('kangwon_notices.csv', 'w', newline='', encoding='utf-8-sig') as f:
+    keys = ['제목', '작성일', '본문', '문서파일 링크', '이미지파일 링크']
+    with open('kangwon_notices_total.csv', 'w', newline='', encoding='utf-8-sig') as f:
         dict_writer = csv.DictWriter(f, fieldnames=keys)
         dict_writer.writeheader()
         dict_writer.writerows(all_notices)
 
-    print("✅ CSV 파일로 저장 완료!")
+    print(f"\n✅ 전체 크롤링 완료! 총 {len(all_notices)}개 저장 완료.")
