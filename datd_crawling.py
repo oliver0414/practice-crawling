@@ -59,7 +59,6 @@ def crawl_notice_list(offset=0):
         try:
             title_box = row.find_element(By.CSS_SELECTOR, 'div.b-title-box')
 
-            # 🔥 고정 공지(b-notice 클래스) 제외
             if 'b-notice' in title_box.get_attribute('class'):
                 continue
 
@@ -67,7 +66,6 @@ def crawl_notice_list(offset=0):
             title = link_tag.text.strip()
             href = link_tag.get_attribute('href')
             detail_url = base_url + "/padm/life/notice-department.do" + href[href.find('?'):]
-
             notices.append({'title': title, 'url': detail_url})
         except Exception as e:
             print("[!] 리스트 항목 파싱 실패:", e)
@@ -79,13 +77,11 @@ def crawl_notice_list(offset=0):
 def crawl_notice_detail(url):
     driver.get(url)
 
-    # 작성일 추출
     try:
         date_element = WebDriverWait(driver, 5).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, 'div.b-etc-box li.b-date-box span:nth-child(2)'))
         )
         date_text_full = date_element.text.strip()
-        # "2025.04.28" ➔ "25.04.28"로 변환
         if len(date_text_full) == 10 and date_text_full.count('.') == 2:
             date_text = date_text_full[2:]
         else:
@@ -94,7 +90,6 @@ def crawl_notice_detail(url):
         date_text = "(작성일 없음)"
         date_text_full = "(작성일 없음)"
 
-    # 본문 추출
     selector_candidates = [
         'div.b-content-box div.fr-view',
         'div.b-content-box'
@@ -117,7 +112,6 @@ def crawl_notice_detail(url):
     if not content_text.strip():
         content_text = "(본문 없음)"
 
-    # 파일 링크 추출
     doc_links = []
     img_links = []
     try:
@@ -138,12 +132,17 @@ def crawl_notice_detail(url):
 
 # ===== 메인 실행 =====
 if __name__ == "__main__":
-    target_date = "25.04.28"  # ✅ 여기에 원하는 날짜 입력
+    target_date = "25.04.28"  # ✅ 찾고 싶은 날짜
     all_notices = []
     total_articles = 7206
     articles_per_page = 10
 
+    stop_crawling = False
+
     for offset in range(0, total_articles, articles_per_page):
+        if stop_crawling:
+            break
+
         print(f"\n📄 현재 페이지 offset: {offset}")
         notices = crawl_notice_list(offset=offset)
 
@@ -152,7 +151,6 @@ if __name__ == "__main__":
             url = notice['url']
             short_date, full_date, content, doc_links, img_links = crawl_notice_detail(url)
 
-            # ✅ 작성일 필터링
             if short_date == target_date:
                 all_notices.append({
                     '제목': title,
@@ -162,6 +160,9 @@ if __name__ == "__main__":
                     '이미지파일 링크': ', '.join(img_links)
                 })
                 print(f"✅ [{offset+idx}] {title} ({short_date}) - 크롤링됨")
+            elif short_date < target_date:
+                stop_crawling = True
+                break
             else:
                 print(f"❌ [{offset+idx}] {title} ({short_date}) - 건너뜀")
 
