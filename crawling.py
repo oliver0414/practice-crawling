@@ -6,6 +6,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup
 import time
 import re
+import csv
 
 # ===== 크롬 드라이버 설정 =====
 options = Options()
@@ -22,15 +23,18 @@ list_url = f"{base_url}/padm/life/notice-department.do"
 # ===== HTML 태그 제거 및 표 처리 =====
 def clean_html_keep_table(raw_html):
     soup = BeautifulSoup(raw_html, 'html.parser')
+
     output_text = ''
 
+    # 🔥 1. 테이블 먼저 추출
     tables = soup.find_all('table')
     for table in tables:
         table_text = extract_table_text(table)
         if table_text.strip():
             output_text += table_text + '\n'
-        table.decompose()
+        table.decompose()  # ✅ 테이블 제거 (중복 방지)
 
+    # 🔥 2. 남은 본문 (p, div 등) 추출
     for elem in soup.find_all(['p', 'div']):
         text = elem.get_text(strip=True)
         if text:
@@ -59,10 +63,17 @@ def crawl_notice_list(offset=0):
 
     for row in rows:
         try:
-            link_tag = row.find_element(By.CSS_SELECTOR, 'div.b-title-box a')
+            title_box = row.find_element(By.CSS_SELECTOR, 'div.b-title-box')
+
+            # 🔥 고정 공지글 (b-notice 클래스 포함) 제외
+            if 'b-notice' in title_box.get_attribute('class'):
+                continue
+
+            link_tag = title_box.find_element(By.CSS_SELECTOR, 'a')
             title = link_tag.text.strip()
             href = link_tag.get_attribute('href')
             detail_url = base_url + "/padm/life/notice-department.do" + href[href.find('?'):]
+
             notices.append({'title': title, 'url': detail_url})
         except Exception as e:
             print("[!] 리스트 항목 파싱 실패:", e)
@@ -70,76 +81,97 @@ def crawl_notice_list(offset=0):
 
     return notices
 
-# ===== 공지 본문, 작성일, 파일링크 크롤링 =====
+
+# ===== 공지 본문 크롤링 (본문 + 파일 링크 추출) =====
 def crawl_notice_detail(url):
     driver.get(url)
 
-    soup = BeautifulSoup(driver.page_source, 'html.parser')
+    # 작성일 추출
+    try:
+        date_element = WebDriverWait(driver, 5).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, 'div.b-etc-box li.b-date-box span:nth-child(2)'))
+        )
+        date_text = date_element.text.strip()
+    except:
+        date_text = "(작성일 없음)"
 
-    # 본문
-    content_area = soup.select_one('div.b-content-box div.fr-view') or soup.select_one('div.b-content-box')
-    if content_area:
-        content_html = content_area.decode_contents()
-        content_text = clean_html_keep_table(content_html)
-    else:
+    # 본문 추출
+    selector_candidates = [
+        'div.b-content-box div.fr-view',
+        'div.b-content-box'
+    ]
+
+    content_text = ""
+    for selector in selector_candidates:
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+            )
+            element = driver.find_element(By.CSS_SELECTOR, selector)
+            content_html = element.get_attribute('innerHTML')
+            content_text = clean_html_keep_table(content_html)
+            if content_text.strip():
+                break
+        except:
+            continue
+
+    if not content_text.strip():
         content_text = "(본문 없음)"
 
-    # 작성일
-    date_area = soup.select_one('div.b-etc-box li.b-date-box span:last-child')
-    if date_area:
-        written_date = date_area.text.strip()
-    else:
-        written_date = "(작성일 없음)"
-
-    # 문서 파일 링크
+    # 파일 추출
     doc_links = []
-    file_area = soup.select('div.b-file-box a')
-    for file_tag in file_area:
-        href = file_tag.get('href')
-        filename = file_tag.text.strip()
-        if href and (filename.endswith('.hwp') or filename.endswith('.pdf')):
-            doc_links.append(base_url + "/padm/life/notice-department.do" + href[href.find('?'):])
-
-    # 이미지 파일 링크
     img_links = []
-    for file_tag in file_area:
-        href = file_tag.get('href')
-        filename = file_tag.text.strip()
-        if href and (filename.endswith('.png') or filename.endswith('.jpg') or filename.endswith('.jpeg')):
-            img_links.append(base_url + "/padm/life/notice-department.do" + href[href.find('?'):])
+    try:
+        file_elements = driver.find_elements(By.CSS_SELECTOR, 'div.b-file-box a.file-down-btn')
+        for file in file_elements:
+            file_href = file.get_attribute('href')
+            file_name = file.text.strip()
+            if file_href and file_name:
+                full_link = base_url + file_href if file_href.startswith('?') else file_href
+                if any(file_name.lower().endswith(ext) for ext in ['.hwp', '.pdf']):
+                    doc_links.append(full_link)
+                elif any(file_name.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg']):
+                    img_links.append(full_link)
+    except:
+        pass
 
-    return content_text, written_date, doc_links, img_links
+    return date_text, content_text, doc_links, img_links
 
 # ===== 메인 실행 =====
 if __name__ == "__main__":
     all_notices = []
 
-    for offset in range(0, 20, 10):
+    # ✅ 여러 페이지 크롤링 (예시: 1~2페이지만)
+    for offset in range(0, 20, 10):  # 10개 단위로: 0, 10, 20, ...
         notices = crawl_notice_list(offset=offset)
 
         for notice in notices:
             title = notice['title']
             url = notice['url']
-            content, written_date, doc_links, img_links = crawl_notice_detail(url)
+            date, content, doc_links, img_links = crawl_notice_detail(url)
 
             all_notices.append({
                 '제목': title,
-                '작성일': written_date,
+                '작성일': date,
                 '본문': content,
-                '문서파일링크': doc_links,
-                '이미지파일링크': img_links
+                '이미지파일 링크': ', '.join(img_links),
+                '문서파일 링크': ', '.join(doc_links)
             })
 
-            print("==== 제목 ====")
-            print(title)
-            print("==== 작성일 ====")
-            print(written_date)
-            print("==== 본문 ====")
-            print(content)
-            print("==== 이미지파일 ====")
-            print(img_links)
-            print("==== 문서파일 ====")
-            print(doc_links)
+            print("==== 제목 ====\n", title)
+            print("==== 작성일 ====\n", date)
+            print("==== 본문 ====\n", content)
+            print("==== 문서파일 링크 ====\n", doc_links)
+            print("==== 이미지파일 링크 ====\n", img_links)
             print("\n\n")
 
     driver.quit()
+
+    # ✅ CSV 파일로 저장
+    keys = ['제목', '작성일', '본문', '문서파일 링크' ,'이미지파일 링크']
+    with open('kangwon_notices.csv', 'w', newline='', encoding='utf-8-sig') as f:
+        dict_writer = csv.DictWriter(f, fieldnames=keys)
+        dict_writer.writeheader()
+        dict_writer.writerows(all_notices)
+
+    print("✅ CSV 파일로 저장 완료!")
